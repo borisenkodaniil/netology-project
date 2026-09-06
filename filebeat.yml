@@ -1,0 +1,16 @@
+filebeat.inputs:
+  - type: filestream
+    id: nginx-access
+    enabled: true
+    paths:
+      - /var/log/nginx/access.log
+
+  - type: filestream
+    id: nginx-error
+    enabled: true
+    paths:
+      - /var/log/nginx/error.log
+
+output.elasticsearch:
+  hosts:
+    - "http://10.0.1.7:9200"

@@ -1,0 +1,34 @@
+---
+- name: install nginx
+  hosts: webservers
+  become: yes
+
+  tasks:
+
+  - name: install nginx
+    apt:
+      name: nginx
+      state: present
+      update_cache: yes
+
+  - name: start nginx
+    service:
+      name: nginx
+      state: started
+      enabled: yes
+
+  - name: copy index.html
+    copy:
+      dest: /var/www/html/index.html
+      content: |
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Курсовой проект</title>
+        </head>
+        <body>
+            <h1>Курсовой проект</h1>
+            <p>Борисенко Даниил</p>
+        </body>
+        </html>
