@@ -1,0 +1,130 @@
+---
+- name: Установка Docker
+  hosts: servers
+  become: yes
+
+  tasks:
+  - name: Установка Docker и Docker Compose
+    apt:
+      name:
+        - docker.io
+        - docker-compose-v2
+      state: present
+      update_cache: yes
+
+  - name: Запуск Docker
+    service:
+      name: docker
+      state: started
+      enabled: yes
+
+- name: Запуск экспортеров
+  hosts: webservers
+  become: yes
+
+  tasks:
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Копирование конфигурации Nginx Log Exporter
+    copy:
+      src: nginxlog.hcl
+      dest: /home/daniil/nginxlog.hcl
+
+  - name: Запуск Node Exporter и Nginx Log Exporter
+    command: docker compose up -d node-exporter nginxlog-exporter
+    args:
+      chdir: /home/daniil
+
+- name: Запуск Prometheus
+  hosts: prometheus
+  become: yes
+
+  tasks:
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Копирование конфигурации Prometheus
+    template:
+      src: prometheus.yml
+      dest: /home/daniil/prometheus.yml
+
+  - name: Запуск Prometheus
+    command: docker compose up -d prometheus
+    args:
+      chdir: /home/daniil
+
+- name: Запуск Grafana
+  hosts: grafana
+  become: yes
+
+  tasks:
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Запуск Grafana
+    command: docker compose up -d grafana
+    args:
+      chdir: /home/daniil
+
+- name: Запуск Elasticsearch
+  hosts: elasticsearch
+  become: yes
+
+  tasks:
+  - name: Настройка vm.max_map_count
+    sysctl:
+      name: vm.max_map_count
+      value: '262144'
+      state: present
+
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Запуск Elasticsearch
+    command: docker compose up -d elasticsearch
+    args:
+      chdir: /home/daniil
+
+- name: Запуск Kibana
+  hosts: kibana
+  become: yes
+
+  tasks:
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Запуск Kibana
+    command: docker compose up -d kibana
+    args:
+      chdir: /home/daniil
+
+- name: Запуск Filebeat
+  hosts: webservers
+  become: yes
+
+  tasks:
+  - name: Копирование docker-compose.yml
+    template:
+      src: docker-compose.yml
+      dest: /home/daniil/docker-compose.yml
+
+  - name: Копирование конфигурации Filebeat
+    template:
+      src: filebeat.yml
+      dest: /home/daniil/filebeat.yml
+
+  - name: Запуск Filebeat
+    command: docker compose up -d filebeat
+    args:
+      chdir: /home/daniil

@@ -24,8 +24,9 @@ resource "yandex_compute_instance" "bastion" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -61,8 +62,9 @@ resource "yandex_compute_instance" "web_a" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -98,8 +100,9 @@ resource "yandex_compute_instance" "web_b" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -135,8 +138,9 @@ resource "yandex_compute_instance" "prometheus" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -172,8 +176,9 @@ resource "yandex_compute_instance" "grafana" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -209,8 +214,9 @@ resource "yandex_compute_instance" "elasticsearch" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {
@@ -246,8 +252,9 @@ resource "yandex_compute_instance" "kibana" {
   }
 
   metadata = {
-    user-data          = file("./cloud-init.yml")
-    serial-port-enable = 1
+    user-data = templatefile("${path.module}/cloud-init.yml", {
+      ssh_public_key = var.ssh_public_key
+    })
   }
 
   scheduling_policy {

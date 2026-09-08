@@ -3,6 +3,10 @@ terraform {
     yandex = {
       source = "yandex-cloud/yandex"
     }
+
+    local = {
+      source = "hashicorp/local"
+    }
   }
 }
 

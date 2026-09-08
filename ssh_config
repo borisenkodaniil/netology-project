@@ -1,8 +1,0 @@
-Host 51.250.82.97
-    User user
-    IdentityFile ~/.ssh/yandex_cloud
-
-Host 10.0.1.* 10.0.2.* 10.0.3.*
-    User user
-    IdentityFile ~/.ssh/yandex_cloud
-    ProxyJump user@51.250.82.97

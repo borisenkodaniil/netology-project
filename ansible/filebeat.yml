@@ -13,4 +13,4 @@ filebeat.inputs:
 
 output.elasticsearch:
   hosts:
-    - "http://10.0.1.7:9200"
+    - "http://{{ hostvars[groups['elasticsearch'][0]].ansible_host }}:9200"

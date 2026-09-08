@@ -1,0 +1,42 @@
+[bastion]
+bastion-host ansible_host=${bastion_ip}
+
+[webservers]
+web-a ansible_host=${web_a_ip}
+web-b ansible_host=${web_b_ip}
+
+[prometheus]
+prometheus-server ansible_host=${prometheus_ip}
+
+[grafana]
+grafana-server ansible_host=${grafana_ip}
+
+[elasticsearch]
+elasticsearch-server ansible_host=${elasticsearch_ip}
+
+[kibana]
+kibana-server ansible_host=${kibana_ip}
+
+
+[private:children]
+webservers
+prometheus
+grafana
+elasticsearch
+kibana
+
+[private:vars]
+ansible_ssh_common_args='-o ProxyCommand="ssh -i ~/.ssh/yandex_cloud -o StrictHostKeyChecking=no -W %h:%p -q daniil@${bastion_ip}"'
+
+
+[servers:children]
+webservers
+prometheus
+grafana
+elasticsearch
+kibana
+
+
+[all:vars]
+ansible_user=daniil
+ansible_ssh_private_key_file=~/.ssh/yandex_cloud

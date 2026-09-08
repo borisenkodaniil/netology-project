@@ -1,72 +1,72 @@
-# Курсовая работа на профессии "DevOps-инженер с нуля" — Борисенко Даниил
+# Курсовая работа «DevOps-инженер с нуля»
 
 ## Задача
 
-В рамках курсовой работы развернул в Yandex Cloud отказоустойчивую инфраструктуру для сайта.
+В рамках курсовой работы я развернул в Yandex Cloud инфраструктуру для сайта с балансировкой нагрузки, мониторингом, централизованным сбором логов и резервным копированием.
 
-Нужно было настроить:
+Для создания облачной инфраструктуры использовал Terraform, для настройки виртуальных машин — Ansible.
 
-- два web-сервера в разных зонах доступности;
+В результате были развернуты:
+
+- две одинаковые ВМ с Nginx в разных зонах доступности;
 - Application Load Balancer;
-- мониторинг через Prometheus и Grafana;
-- сбор логов через Filebeat, Elasticsearch и Kibana;
-- приватные и публичные подсети;
-- Security Groups;
+- Prometheus;
+- Grafana;
+- Node Exporter;
+- Nginx Log Exporter;
+- Elasticsearch;
+- Kibana;
+- Filebeat;
 - bastion host;
-- ежедневное резервное копирование дисков.
-
-Для создания облачной инфраструктуры использовал Terraform.
-
-Для настройки виртуальных машин использовал Ansible.
-
-Сервисы мониторинга и логирования запускаются в Docker.
+- автоматическое резервное копирование дисков.
 
 ---
 
-# 1. Файлы проекта
-
-Terraform:
+# 1. Структура проекта
 
 ```text
-providers.tf
-variables.tf
-network.tf
-vms.tf
-balancer.tf
-backup.tf
+netology-project/
+├── ansible/
+│   ├── ansible.cfg
+│   ├── docker-compose.yml
+│   ├── docker_playbook.yml
+│   ├── filebeat.yml
+│   ├── hosts.ini
+│   ├── nginx_playbook.yml
+│   ├── nginxlog.hcl
+│   └── prometheus.yml
+│
+├── terraform/
+│   ├── backup.tf
+│   ├── balancer.tf
+│   ├── cloud-init.yml
+│   ├── hosts.ini.tftpl
+│   ├── inventory.tf
+│   ├── network.tf
+│   ├── outputs.tf
+│   ├── providers.tf
+│   ├── variables.tf
+│   └── vms.tf
+│
+├── screenshots/
+├── .gitignore
+├── Задание.md
+└── README.md
 ```
 
-Ansible и SSH:
+Файл `ansible/hosts.ini` создаётся Terraform автоматически и в Git не хранится.
 
-```text
-ansible.cfg
-hosts.ini
-ssh_config
-nginx.yml
-docker.yml
-```
-
-Конфигурации сервисов:
-
-```text
-cloud-init.yml
-docker-compose.yml
-prometheus.yml
-nginxlog.hcl
-filebeat.yml
-```
-
-Скриншоты проверок находятся в каталоге:
-
-```text
-screenshots/
-```
+Файлы состояния Terraform также исключены из репозитория.
 
 ---
 
-# 2. Terraform и Yandex Cloud
+# 2. Terraform
 
-Для работы с Yandex Cloud подключил Terraform-провайдер:
+Для создания инфраструктуры использовал Terraform и провайдер Yandex Cloud.
+
+Также подключён провайдер `local`, который нужен для автоматической генерации Ansible inventory.
+
+Основные провайдеры:
 
 ```hcl
 terraform {
@@ -74,28 +74,15 @@ terraform {
     yandex = {
       source = "yandex-cloud/yandex"
     }
+
+    local = {
+      source = "hashicorp/local"
+    }
   }
 }
-
-provider "yandex" {
-  zone = "ru-central1-a"
-}
 ```
 
-В `variables.tf` используется переменная:
-
-```hcl
-variable "flow" {
-  type    = string
-  default = "project"
-}
-```
-
-Она используется в именах создаваемых ресурсов.
-
-Для Terraform создал отдельный service account.
-
-Авторизация выполнялась через временный IAM-токен:
+Для авторизации использую временный IAM-токен:
 
 ```bash
 export YC_TOKEN=$(yc iam create-token --impersonate-service-account-id <SERVICE_ACCOUNT_ID>)
@@ -103,152 +90,97 @@ export YC_CLOUD_ID=$(yc config get cloud-id)
 export YC_FOLDER_ID=$(yc config get folder-id)
 ```
 
-Для проверки и применения конфигурации использовал:
+Публичный SSH-ключ передаю в Terraform через переменную окружения:
 
 ```bash
-terraform init
-terraform validate
-terraform plan
-terraform apply
+export TF_VAR_ssh_public_key="$(cat ~/.ssh/yandex_cloud.pub)"
 ```
 
-## Проблема с авторизацией
-
-Во время работы несколько раз Terraform переставал обращаться к Yandex Cloud из-за истёкшего IAM-токена.
-
-В этом случае повторно получал токен:
-
-```bash
-export YC_TOKEN=$(yc iam create-token --impersonate-service-account-id <SERVICE_ACCOUNT_ID>)
-```
-
-После этого Terraform снова нормально работал.
+Сам приватный ключ в репозиторий не добавляется.
 
 ---
 
 # 3. Сеть
 
-Для проекта создал одну VPC.
+Для проекта создана одна VPC.
 
-В ней находятся две приватные подсети:
-
-```text
-develop_a — 10.0.1.0/24 — ru-central1-a
-develop_b — 10.0.2.0/24 — ru-central1-b
-```
-
-И одна публичная:
+Используются три подсети:
 
 ```text
-public — 10.0.3.0/24 — ru-central1-a
+10.0.1.0/24 — приватная, ru-central1-a
+10.0.2.0/24 — приватная, ru-central1-b
+10.0.3.0/24 — публичная, ru-central1-a
 ```
 
-Две приватные подсети нужны для размещения web-серверов в разных зонах доступности.
-
-`web-a` находится в:
+В приватной сети находятся:
 
 ```text
-ru-central1-a
+web-a
+web-b
+prometheus
+elasticsearch
 ```
 
-`web-b`:
+Grafana и Kibana имеют публичные IP, так как их web-интерфейсы должны быть доступны для проверки.
 
-```text
-ru-central1-b
-```
+Bastion также имеет публичный IP и используется для SSH-доступа к остальным серверам.
 
-Web-серверы, Prometheus и Elasticsearch находятся в приватных подсетях и не имеют публичных IP.
-
-Grafana, Kibana и bastion находятся в публичной подсети.
+Для выхода приватных машин в интернет настроен NAT Gateway и таблица маршрутизации.
 
 ---
 
-# 4. NAT Gateway
+# 4. Группы безопасности
 
-Приватным ВМ нужен исходящий доступ в интернет для установки пакетов и скачивания Docker-образов.
+Для сервисов настроены Security Groups.
 
-При этом выдавать им публичные IP я не стал.
+Снаружи открыты только необходимые порты.
 
-Для выхода в интернет создал NAT Gateway и таблицу маршрутизации.
-
-Маршрут:
+Bastion:
 
 ```text
-0.0.0.0/0
+22/tcp — SSH
 ```
 
-направляется через NAT Gateway.
-
-В результате приватные машины могут обращаться во внешнюю сеть, но напрямую из интернета они недоступны.
-
----
-
-# 5. Security Groups
-
-Для разных сервисов создал отдельные Security Groups.
-
-Старался открывать только необходимые порты.
-
-На bastion из интернета открыт только:
+Web-серверы:
 
 ```text
-22/tcp
+22/tcp   — SSH через bastion
+80/tcp   — HTTP от балансировщика
+9100/tcp — Node Exporter для Prometheus
+4040/tcp — Nginx Log Exporter для Prometheus
 ```
 
-У web-серверов разрешены:
+Prometheus:
 
 ```text
-22   — от bastion
-80   — от Application Load Balancer
-9100 — от Prometheus
-4040 — от Prometheus
+9090/tcp — доступ со стороны Grafana
 ```
 
-Prometheus принимает соединения на:
+Grafana:
 
 ```text
-9090
+3000/tcp
 ```
 
-только от Grafana.
-
-Grafana доступна по:
+Elasticsearch:
 
 ```text
-3000
+9200/tcp — доступ только необходимым сервисам внутри сети
 ```
 
 Kibana:
 
 ```text
-5601
+5601/tcp
 ```
 
-Elasticsearch находится в приватной сети.
-
-Порт:
-
-```text
-9200
-```
-
-доступен только web-серверам с Filebeat и Kibana.
-
-Таким образом наружу открыты только необходимые web-интерфейсы и SSH bastion.
+SSH к сервисным ВМ выполняется через bastion.
 
 ---
 
-# 6. Виртуальные машины
+# 5. Виртуальные машины
 
-Все виртуальные машины создаются через Terraform.
-
-Используется:
-
-```text
-Ubuntu 22.04 LTS
-```
-
-Созданы:
+Terraform создаёт семь виртуальных машин:
 
 ```text
 bastion
@@ -260,210 +192,126 @@ elasticsearch
 kibana
 ```
 
-`web-a` и `web-b` размещены в разных зонах доступности.
+`web-a` и `web-b` находятся в разных зонах доступности.
 
-Prometheus и Elasticsearch не имеют публичных IP.
-
-Grafana и Kibana имеют публичные адреса, потому что их web-интерфейсы должны быть доступны для проверки.
-
-Elasticsearch выделил больше памяти и диск большего размера, так как он требовательнее остальных сервисов.
-
-Так как инфраструктура учебная, использовал:
-
-```hcl
-core_fraction = 20
-```
-
-и прерываемые ВМ:
-
-```hcl
-scheduling_policy {
-  preemptible = true
-}
-```
-
-Это позволило уменьшить стоимость ресурсов в облаке.
+Для учебного проекта использовал прерываемые ВМ и небольшую гарантированную долю CPU, чтобы уменьшить стоимость инфраструктуры.
 
 ![Виртуальные машины](screenshots/vm.png)
 
 ---
 
-# 7. Cloud-init
+# 6. Cloud-init и SSH
 
-Для первоначальной настройки ВМ используется `cloud-init.yml`.
+При создании ВМ используется `cloud-init.yml`.
 
 На каждой машине создаётся пользователь:
 
 ```text
-user
+daniil
 ```
 
-с правами sudo.
+Пользователь получает права `sudo`, а публичный SSH-ключ передаётся в cloud-init из Terraform:
 
-Также добавляется мой публичный SSH-ключ.
+```yaml
+#cloud-config
 
-После создания ВМ можно подключаться к ним по ключу без использования пароля.
+users:
+- name: daniil
+  groups: sudo
+  shell: /bin/bash
+  sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+  ssh_authorized_keys:
+  - ${ssh_public_key}
+```
+
+Таким образом публичный ключ не хранится напрямую в конфигурации.
 
 ---
 
-# 8. Bastion и Ansible
+# 7. Автоматический Ansible inventory
 
-Внутренние серверы не имеют публичных IP, поэтому напрямую подключаться к ним с ноутбука нельзя.
+Одна из важных частей проекта — автоматическая генерация `hosts.ini`.
 
-Для доступа используется bastion host.
+Раньше IP-адреса серверов приходилось указывать вручную. После пересоздания инфраструктуры адреса менялись, поэтому такой вариант был неудобен.
 
-На момент выполнения работы его публичный адрес:
-
-```text
-51.250.82.97
-```
-
-В `hosts.ini` оставил только группы серверов и их адреса:
-
-```ini
-[bastion]
-51.250.82.97
-
-[webservers]
-10.0.1.10
-10.0.2.20
-
-[prometheus]
-10.0.1.18
-
-[grafana]
-10.0.3.34
-
-[elasticsearch]
-10.0.1.7
-
-[kibana]
-10.0.3.11
-
-[servers:children]
-webservers
-prometheus
-grafana
-elasticsearch
-kibana
-```
-
-Сначала подключение через bastion было настроено прямо в inventory через длинный `ProxyCommand`.
-
-Работало это нормально, но сам `hosts.ini` из-за этого стал плохо читаемым.
-
-Поэтому SSH-логику вынес в отдельный файл:
+Для решения этой проблемы добавил:
 
 ```text
-ssh_config
+terraform/hosts.ini.tftpl
+terraform/inventory.tf
 ```
 
-В нём указал параметры bastion:
-
-```sshconfig
-Host 51.250.82.97
-    User user
-    IdentityFile ~/.ssh/yandex_cloud
-```
-
-А внутренние адреса подключаются через него с помощью `ProxyJump`:
-
-```sshconfig
-Host 10.0.1.* 10.0.2.* 10.0.3.*
-    User user
-    IdentityFile ~/.ssh/yandex_cloud
-    ProxyJump user@51.250.82.97
-```
-
-После этого `ansible.cfg` стал проще:
-
-```ini
-[defaults]
-inventory = ./hosts.ini
-host_key_checking = False
-
-[ssh_connection]
-ssh_args = -F ./ssh_config
-```
-
-Теперь:
-
-- `hosts.ini` содержит только список серверов;
-- `ssh_config` отвечает за SSH-подключение;
-- `ansible.cfg` указывает Ansible использовать эти файлы.
-
-При первой попытке после изменения bastion не подключался:
+Terraform получает актуальные адреса созданных ВМ и формирует:
 
 ```text
-daniil@51.250.82.97: Permission denied (publickey)
+ansible/hosts.ini
 ```
 
-Причина была в том, что SSH-правило было написано для имени `bastion`, а Ansible подключался непосредственно по IP.
+Для сервисных машин используются внутренние IP.
 
-Из-за этого использовался локальный пользователь `daniil`.
+Для bastion используется публичный IP.
 
-После того как в `ssh_config` указал непосредственно IP bastion и пользователя `user`, подключение заработало.
+Подключение к приватным машинам выполняется через `ProxyCommand` и bastion.
 
-Финальная проверка:
+Пользователь Ansible:
+
+```text
+daniil
+```
+
+После `terraform apply` вручную изменять `hosts.ini` не требуется.
+
+Проверка:
 
 ```bash
+cd ../ansible
 ansible all -m ping
 ```
 
-Все серверы успешно отвечают.
+Все семь серверов должны вернуть `SUCCESS`.
 
 ![Проверка Ansible](screenshots/ansible_ping.png)
 
-Ansible также выводил предупреждение о автоматически найденном Python:
-
-```text
-/usr/bin/python3.10
-```
-
-Это предупреждение не мешало работе playbook.
-
 ---
 
-# 9. Web-серверы
+# 8. Web-серверы
 
-На двух web-серверах с помощью Ansible установил Nginx.
-
-Для этого используется:
+Для настройки двух web-серверов используется:
 
 ```text
-nginx.yml
+nginx_playbook.yml
 ```
 
 Playbook:
 
-- устанавливает nginx;
-- запускает сервис;
-- включает автозапуск;
-- размещает одинаковую статическую страницу.
+- устанавливает Nginx;
+- запускает Nginx;
+- включает автоматический запуск;
+- создаёт одинаковую статическую страницу на двух серверах.
 
 Запуск:
 
 ```bash
-ansible-playbook nginx.yml
+ansible-playbook nginx_playbook.yml
 ```
 
-После установки проверил Nginx сразу на двух серверах:
+Проверка:
 
 ```bash
-ansible webservers -m shell -a "curl -s localhost"
+ansible webservers -b -m shell -a "systemctl is-active nginx"
 ```
 
-Оба сервера возвращают одинаковую HTML-страницу.
+На обоих серверах Nginx должен находиться в состоянии:
 
-Это важно, так как оба используются как одинаковые backend для балансировщика.
+```text
+active
+```
 
 ---
 
-# 10. Application Load Balancer
+# 9. Балансировка нагрузки
 
-После настройки web-серверов создал Application Load Balancer.
-
-В Terraform создаются:
+Для сайта через Terraform создаются:
 
 ```text
 Target Group
@@ -473,91 +321,75 @@ Virtual Host
 Application Load Balancer
 ```
 
-В Target Group добавлены:
+В Target Group находятся обе web-ВМ.
 
-```text
-10.0.1.10
-10.0.2.20
-```
-
-Это внутренние адреса `web-a` и `web-b`.
-
-Backend работает на:
+Backend использует HTTP и порт:
 
 ```text
 80
 ```
 
-Для web-серверов настроен HTTP healthcheck:
+Проверка состояния настроена на:
 
 ```text
 path: /
 port: 80
-interval: 5s
-timeout: 3s
+protocol: HTTP
 ```
 
-Оба сервера успешно проходят проверку.
+Application Load Balancer принимает внешний HTTP-трафик на порту `80` и распределяет его между двумя web-серверами.
 
-![Healthcheck](screenshots/balancer_cloud.png)
+![Балансировщик](screenshots/balancer_cloud.png)
 
-Application Load Balancer имеет публичный IP и listener на порту:
-
-```text
-80
-```
-
-Проверил сайт через терминал:
+Публичный адрес не прописывается вручную и получается через Terraform:
 
 ```bash
-curl http://51.250.45.31
+terraform output -raw site_ip
 ```
 
-![Проверка балансировщика](screenshots/balancer_curl.png)
+Проверка:
 
-Также проверил его в браузере:
+```bash
+curl -v "http://$(terraform output -raw site_ip)"
+```
+
+![Проверка сайта](screenshots/balancer_curl.png)
 
 ![Сайт](screenshots/balancer_web.png)
 
-Web-серверы напрямую из интернета недоступны. Пользователь обращается только к балансировщику.
-
 ---
 
-# 11. Docker
+# 10. Docker
 
-Для сервисов мониторинга и логирования решил использовать Docker.
+Prometheus, Grafana, Elasticsearch, Kibana, Filebeat и exporters запускаются в Docker.
 
-Через Docker запускаются:
+Docker и Docker Compose устанавливаются через Ansible.
 
-```text
-Node Exporter
-Nginx Log Exporter
-Prometheus
-Grafana
-Elasticsearch
-Kibana
-Filebeat
-```
-
-Docker и Docker Compose устанавливаются через:
+Основной playbook:
 
 ```text
-docker.yml
+docker_playbook.yml
 ```
 
-Основной запуск:
+Проверка синтаксиса:
 
 ```bash
-ansible-playbook docker.yml
+ansible-playbook docker_playbook.yml --syntax-check
 ```
 
-Docker выбрал потому, что для учебного проекта так проще разворачивать одинаковые версии сервисов и не устанавливать каждый сервис вручную.
+Запуск:
+
+```bash
+ansible-playbook docker_playbook.yml
+```
+
+Playbook устанавливает Docker и автоматически запускает необходимые контейнеры на соответствующих ВМ.
 
 ---
 
-# 12. Мониторинг
+# 11. Мониторинг
 
-Для мониторинга использовал:
+Для мониторинга используются:
 
 ```text
 Node Exporter
@@ -568,30 +400,24 @@ Grafana
 
 ## Node Exporter
 
-Node Exporter работает на обоих web-серверах.
-
-Он доступен на:
+Node Exporter работает на двух web-серверах и предоставляет системные метрики на порту:
 
 ```text
 9100
 ```
 
-Через него Prometheus получает системные метрики:
+С его помощью собираются метрики:
 
 - CPU;
 - RAM;
-- filesystem;
-- сеть;
-- load;
-- uptime.
+- дисков;
+- файловой системы;
+- сети;
+- загрузки системы.
 
 ## Nginx Log Exporter
 
-Для HTTP-метрик использовал:
-
-```text
-prometheus-nginxlog-exporter
-```
+Nginx Log Exporter также работает на обоих web-серверах.
 
 Он читает:
 
@@ -599,367 +425,257 @@ prometheus-nginxlog-exporter
 /var/log/nginx/access.log
 ```
 
-и отдаёт метрики на:
+и предоставляет HTTP-метрики на порту:
 
 ```text
 4040
 ```
 
-Настройки находятся в:
+Конфигурация находится в:
 
 ```text
 nginxlog.hcl
 ```
 
----
-
-# 13. Проблема с Nginx Log Exporter
-
-С Nginx Log Exporter возникла основная проблема при настройке мониторинга.
-
-После запуска Prometheus видел только два работающих target вместо четырёх.
-
-Ожидалось:
-
-```text
-2 x Node Exporter
-2 x Nginx Log Exporter
-```
-
-Проверил exporter отдельно.
-
-Node Exporter отвечали:
-
-```text
-10.0.1.10:9100 — 200
-10.0.2.20:9100 — 200
-```
-
-Nginx Log Exporter были недоступны.
-
-После проверки:
+На каждом web-сервере Ansible запускает оба exporter:
 
 ```bash
-docker ps -a
+docker compose up -d node-exporter nginxlog-exporter
 ```
-
-увидел, что оба контейнера находятся в:
-
-```text
-Restarting
-```
-
-В логах:
-
-```bash
-docker logs nginxlog-exporter
-```
-
-была ошибка:
-
-```text
-read /etc/prometheus-nginxlog-exporter.hcl: is a directory
-```
-
-Проблема оказалась в монтировании конфигурационного файла.
-
-Вместо файла Docker использовал каталог.
-
-После исправления конфигурации и пересоздания контейнеров exporter успешно запустился.
-
-После этого Prometheus начал видеть все четыре endpoint.
 
 ---
 
-# 14. Исправление Ansible playbook
+# 12. Prometheus
 
-При финальной проверке проекта нашёл ещё одну проблему.
+Prometheus работает на отдельной приватной ВМ.
 
-В первой версии `docker.yml` Ansible запускал только:
+Публичного IP у него нет.
+
+Конфигурация находится в:
 
 ```text
-node-exporter
+prometheus.yml
 ```
 
-Nginx Log Exporter был запущен мной вручную во время отладки.
+Интервал сбора метрик:
 
-Из-за этого текущая инфраструктура работала, но playbook не мог полностью воспроизвести её с нуля.
+```text
+15s
+```
 
-Исправил запуск:
+Адреса web-серверов в конфигурации не прописаны вручную.
+
+Ansible формирует конфигурацию через `hostvars` из актуального inventory:
 
 ```yaml
-command: docker compose up -d node-exporter nginxlog-exporter
+- "{{ hostvars[groups['webservers'][0]].ansible_host }}:9100"
+- "{{ hostvars[groups['webservers'][1]].ansible_host }}:9100"
 ```
 
-После изменения снова выполнил:
+Аналогично формируются адреса Nginx Log Exporter на порту `4040`.
+
+Поэтому после пересоздания ВМ конфигурацию Prometheus вручную изменять не требуется.
+
+Проверка готовности:
 
 ```bash
-ansible-playbook docker.yml
+ansible prometheus -b -m shell -a "curl -fsS http://localhost:9090/-/ready"
 ```
-
-И проверил контейнеры:
-
-```bash
-ansible webservers -b -m shell -a "docker ps | grep -E 'node-exporter|nginxlog-exporter|filebeat'"
-```
-
-На обоих web-серверах работают:
-
-```text
-node-exporter
-nginxlog-exporter
-filebeat
-```
-
-После этого ручной запуск Nginx Log Exporter больше не требуется.
-
----
-
-# 15. Prometheus
-
-Prometheus находится на отдельной приватной ВМ:
-
-```text
-10.0.1.18
-```
-
-Публичного IP у неё нет.
-
-В `prometheus.yml` настроен интервал:
-
-```text
-15 секунд
-```
-
-Prometheus получает системные метрики с:
-
-```text
-10.0.1.10:9100
-10.0.2.20:9100
-```
-
-И метрики Nginx:
-
-```text
-10.0.1.10:4040
-10.0.2.20:4040
-```
-
-Проверил работу контейнера:
 
 ![Prometheus](screenshots/prometheus_docker.png)
 
 ---
 
-# 16. Grafana
+# 13. Grafana
 
-Grafana развернута на отдельной публичной ВМ.
-
-Prometheus подключён как Data Source:
+Grafana работает на отдельной ВМ и доступна через web-интерфейс на порту:
 
 ```text
-http://10.0.1.18:9090
+3000
 ```
 
-Соединение успешно прошло проверку.
+В качестве источника данных используется Prometheus.
 
-![Prometheus в Grafana](screenshots/grafana_prometheus.png)
-
-Для системных показателей использовал готовый dashboard:
+Для системных метрик использовал dashboard:
 
 ```text
 Node Exporter Full
-ID 1860
+ID: 1860
 ```
 
-Он отображает:
+На нём отображаются основные показатели:
 
 - CPU;
 - RAM;
 - диски;
 - сеть;
-- system load;
-- uptime;
+- загрузка;
 - saturation.
 
-На основных показателях используются thresholds.
+На основных графиках настроены thresholds.
 
-![Node Exporter Full](screenshots/grafana_dashboard.png)
+![Grafana](screenshots/grafana_dashboard.png)
 
-Для Nginx использовал:
+Для метрик Nginx используется dashboard:
 
 ```text
 NGINX Log Metrics
-ID 15947
+ID: 15947
 ```
 
-В нём отображаются HTTP-коды, HTTP-трафик и метрики:
+В том числе отображаются требуемые метрики:
 
 ```text
 http_response_count_total
 http_response_size_bytes
 ```
 
-![NGINX Log Metrics](screenshots/grafana_nginx.png)
-
-У части дополнительных панелей готового dashboard отображается:
-
-```text
-No data
-```
-
-Это связано с тем, что dashboard содержит дополнительные запросы, для которых используемый мной exporter не предоставляет данные.
-
-Необходимые для задания метрики при этом работают.
+![Nginx в Grafana](screenshots/grafana_nginx.png)
 
 ---
 
-# 17. Elasticsearch
+# 14. Elasticsearch
 
-Для хранения логов развернул Elasticsearch на отдельной приватной ВМ:
+Elasticsearch работает на отдельной приватной ВМ.
 
-```text
-10.0.1.7
-```
+Используется официальный Docker-образ Elasticsearch `8.15.3`.
 
-Использовал официальный образ версии:
-
-```text
-8.15.3
-```
-
-Elasticsearch работает как:
+Для учебного проекта Elasticsearch работает в режиме:
 
 ```text
 single-node
 ```
 
-Для него через Ansible устанавливается:
+Через Ansible устанавливается:
 
 ```text
 vm.max_map_count=262144
 ```
 
-Для учебного проекта отключил:
+Также для учебного стенда отключена встроенная авторизация Elasticsearch:
 
 ```text
 xpack.security.enabled=false
 ```
 
-При этом Elasticsearch не имеет публичного IP.
+Elasticsearch не имеет публичного IP.
 
-Доступ к `9200` ограничен Security Group.
-
-Проверил работу:
+Проверка:
 
 ```bash
-ansible elasticsearch -b -m shell -a "curl -s localhost:9200"
+ansible elasticsearch -b -m shell -a "curl -fsS http://localhost:9200"
 ```
-
-Elasticsearch вернул информацию о кластере и версии.
 
 ![Elasticsearch](screenshots/elasticsearch_docker.png)
 
 ---
 
-# 18. Filebeat
+# 15. Filebeat
 
-На обоих web-серверах работает Filebeat.
+Filebeat работает на обоих web-серверах.
 
-Он читает:
+Он читает логи Nginx:
 
 ```text
 /var/log/nginx/access.log
 /var/log/nginx/error.log
 ```
 
-и отправляет данные в Elasticsearch:
+После этого отправляет их в Elasticsearch.
 
-```text
-http://10.0.1.7:9200
+Адрес Elasticsearch также не прописан статически.
+
+В `filebeat.yml` используется Ansible `hostvars`:
+
+```yaml
+output.elasticsearch:
+  hosts:
+    - "http://{{ hostvars[groups['elasticsearch'][0]].ansible_host }}:9200"
 ```
 
-Каталог логов монтируется в контейнер только для чтения.
+Таким образом после изменения IP Elasticsearch конфигурация автоматически получает актуальный адрес.
 
-Проверил работу Filebeat на двух серверах:
+Проверка контейнеров:
+
+```bash
+ansible webservers -b -m shell -a "docker ps | grep filebeat"
+```
 
 ![Filebeat](screenshots/filebeat_docker.png)
 
 ---
 
-# 19. Kibana
+# 16. Kibana
 
-Kibana работает на отдельной публичной ВМ.
+Kibana работает на отдельной ВМ.
 
-Она подключена к Elasticsearch по приватному адресу:
-
-```text
-http://10.0.1.7:9200
-```
-
-Web-интерфейс доступен на:
+Web-интерфейс доступен на порту:
 
 ```text
 5601
 ```
 
+Kibana подключается к Elasticsearch по его приватному IP.
+
+Адрес Elasticsearch формируется Ansible автоматически через `hostvars` при создании `docker-compose.yml`.
+
+Поэтому после полного пересоздания инфраструктуры IP Elasticsearch вручную изменять не требуется.
+
 ![Kibana](screenshots/kibana_web.png)
 
 ---
 
-# 20. Проверка логирования
+# 17. Проверка логирования
 
-Для проверки решил сгенерировать реальные nginx-логи.
-
-Создал несколько запросов к несуществующей странице:
+Для проверки всей цепочки создал несколько запросов к несуществующей странице сайта:
 
 ```bash
+SITE_IP=$(terraform output -raw site_ip)
+
 for i in {1..10}; do
-  curl -s -o /dev/null http://51.250.45.31/test404
+  curl -s -o /dev/null "http://${SITE_IP}/test404"
 done
 ```
 
-Nginx отвечает:
+Nginx записывает запросы в `access.log`.
+
+Далее данные проходят по цепочке:
 
 ```text
-404
+Nginx
+  ↓
+Filebeat
+  ↓
+Elasticsearch
+  ↓
+Kibana
 ```
 
-и записывает запросы в `access.log`.
-
-Filebeat считывает эти записи и отправляет их в Elasticsearch.
-
-В Kibana создал Data View:
+В Kibana создан Data View:
 
 ```text
 filebeat-*
 ```
 
-В Discover выполнил поиск:
+В Discover можно найти запросы:
 
 ```text
 test404
 ```
 
-В результате появились записи:
+В логах отображаются ответы:
 
 ```text
 GET /test404 HTTP/1.1 404
 ```
 
-![Логи nginx в Kibana](screenshots/kibana_logs_web.png)
-
-Таким образом проверил работу всей цепочки:
-
-```text
-Nginx -> Filebeat -> Elasticsearch -> Kibana
-```
+![Логи Nginx в Kibana](screenshots/kibana_logs_web.png)
 
 ---
 
-# 21. Резервное копирование
+# 18. Резервное копирование
 
-Для всех виртуальных машин настроил автоматические snapshots дисков.
+Для дисков всех семи виртуальных машин настроено автоматическое создание snapshot.
 
 Расписание:
 
@@ -967,215 +683,267 @@ Nginx -> Filebeat -> Elasticsearch -> Kibana
 0 0 * * *
 ```
 
-То есть snapshot создаётся один раз в сутки.
+Снимок создаётся один раз в сутки.
 
-Время хранения:
+Срок хранения:
 
 ```text
 168h
 ```
 
-Это:
+То есть семь дней.
+
+В расписание входят диски:
 
 ```text
-7 дней
-```
-
-В расписание добавлены диски всех ВМ:
-
-```text
+bastion
 web-a
 web-b
 prometheus
 grafana
 elasticsearch
 kibana
-bastion
 ```
 
-После:
-
-```bash
-terraform apply
-```
-
-проверил расписание:
+Проверка:
 
 ```bash
 yc compute snapshot-schedule list
 ```
 
-Создано:
+Расписание:
 
 ```text
 daily-backup-project
 ```
 
-Статус:
-
-```text
-ACTIVE
-```
-
-![Backup](screenshots/backup.png)
+![Резервное копирование](screenshots/backup.png)
 
 ---
 
-# 22. Основные проблемы
+# 19. Воспроизводимость инфраструктуры
 
-В процессе работы столкнулся с несколькими проблемами.
+После основной настройки отдельно проверил возможность полностью пересоздать инфраструктуру.
 
-## IAM-токен
+Главная проблема первоначальной версии заключалась в статически указанных IP-адресах.
 
-IAM-токен Yandex Cloud истекал, после чего Terraform переставал проходить авторизацию.
+При выполнении:
 
-Решение — повторно получать `YC_TOKEN`.
-
-## Nginx Log Exporter
-
-Контейнер постоянно перезапускался.
-
-В логах была ошибка:
-
-```text
-read /etc/prometheus-nginxlog-exporter.hcl: is a directory
+```bash
+terraform destroy
+terraform apply
 ```
 
-После исправления монтирования конфигурации exporter заработал.
+виртуальные машины получают новые адреса, поэтому ручная конфигурация нарушала воспроизводимость проекта.
 
-## Ansible не запускал Nginx Log Exporter
+Это было исправлено.
 
-Во время отладки exporter был запущен вручную.
+Сейчас:
 
-Позже обнаружил, что в `docker.yml` отсутствовал его автоматический запуск.
+- Ansible inventory генерируется Terraform автоматически;
+- публичный SSH-ключ передаётся через переменную Terraform;
+- SSH-пользователь `daniil` создаётся через cloud-init;
+- Prometheus получает адреса web-серверов через Ansible `hostvars`;
+- Filebeat получает адрес Elasticsearch через `hostvars`;
+- Kibana получает адрес Elasticsearch через `hostvars`;
+- ручное изменение IP после `terraform apply` не требуется.
 
-Исправил playbook и повторно проверил оба web-сервера.
+Для проверки выполнил полный цикл удаления и повторного создания инфраструктуры.
 
-## SSH через bastion
-
-Сначала подключение через bastion было записано длинным `ProxyCommand` прямо в `hosts.ini`.
-
-Чтобы сделать конфигурацию понятнее, вынес SSH-настройки в отдельный `ssh_config` и использовал `ProxyJump`.
-
-После первой правки Ansible пытался подключаться к bastion как:
-
-```text
-daniil@51.250.82.97
-```
-
-и получал:
-
-```text
-Permission denied (publickey)
-```
-
-Причина была в том, что SSH-настройка не применялась к IP bastion.
-
-После указания IP и пользователя `user` напрямую в `ssh_config` подключение заработало.
-
-## Grafana
-
-Некоторые дополнительные панели импортированного Nginx dashboard показывают `No data`.
-
-Необходимые для курсовой метрики при этом собираются и отображаются, поэтому полностью переделывать готовый dashboard не стал.
+После пересоздания все ВМ получили актуальные адреса, inventory был создан автоматически, а Ansible успешно подключился ко всем машинам.
 
 ---
 
-# 23. Принятые решения
+# 20. Полное развёртывание с нуля
 
-Prometheus, Grafana, Elasticsearch, Kibana и exporters запускаются через Docker.
+## Terraform
 
-Для учебного проекта так проще устанавливать и повторно разворачивать сервисы через Ansible.
+Перехожу в каталог:
 
-Elasticsearch работает как `single-node`.
+```bash
+cd terraform
+```
 
-Для production этого было бы недостаточно, но для этой работы отдельной ВМ достаточно.
+Передаю SSH-ключ:
 
-Использовал прерываемые ВМ, чтобы уменьшить расходы на Yandex Cloud.
+```bash
+export TF_VAR_ssh_public_key="$(cat ~/.ssh/yandex_cloud.pub)"
+```
 
-В качестве сайта использовал простую статическую HTML-страницу, потому что главная цель web-части — проверить работу Nginx, ALB, мониторинга и логирования.
+Получаю токен Yandex Cloud:
 
-Prometheus и Elasticsearch оставил в приватной сети.
+```bash
+export YC_TOKEN=$(yc iam create-token --impersonate-service-account-id <SERVICE_ACCOUNT_ID>)
+export YC_CLOUD_ID=$(yc config get cloud-id)
+export YC_FOLDER_ID=$(yc config get folder-id)
+```
+
+После этого:
+
+```bash
+terraform init
+terraform validate
+terraform plan
+terraform apply
+terraform output
+```
+
+После `terraform apply` автоматически создаётся:
+
+```text
+../ansible/hosts.ini
+```
+
+Редактировать его вручную не требуется.
+
+## Ansible
+
+Перехожу в каталог:
+
+```bash
+cd ../ansible
+```
+
+Проверяю подключение:
+
+```bash
+ansible all -m ping
+```
+
+Проверяю playbook:
+
+```bash
+ansible-playbook nginx_playbook.yml --syntax-check
+ansible-playbook docker_playbook.yml --syntax-check
+```
+
+Разворачиваю Nginx:
+
+```bash
+ansible-playbook nginx_playbook.yml
+```
+
+Разворачиваю Docker-сервисы:
+
+```bash
+ansible-playbook docker_playbook.yml
+```
+
+После этих команд серверная часть инфраструктуры поднимается без ручного изменения IP-адресов.
 
 ---
 
-# 24. Доступ к сервисам
+# 21. Проверка сервисов
 
-Сайт:
+Nginx:
 
-```text
-http://51.250.45.31
+```bash
+ansible webservers -b -m shell -a "systemctl is-active nginx"
+```
+
+Контейнеры на web-серверах:
+
+```bash
+ansible webservers -b -m shell -a "docker ps"
+```
+
+Prometheus:
+
+```bash
+ansible prometheus -b -m shell -a "curl -fsS http://localhost:9090/-/ready"
+```
+
+Grafana:
+
+```bash
+ansible grafana -b -m shell -a "curl -fsS http://localhost:3000/api/health"
+```
+
+Elasticsearch:
+
+```bash
+ansible elasticsearch -b -m shell -a "curl -fsS http://localhost:9200"
+```
+
+Kibana:
+
+```bash
+ansible kibana -b -m shell -a "curl -s http://localhost:5601/api/status | head -c 500"
+```
+
+---
+
+# 22. Доступ к сервисам
+
+Актуальные адреса получаю через Terraform:
+
+```bash
+cd terraform
+terraform output
+```
+
+Адрес сайта:
+
+```bash
+terraform output -raw site_ip
+```
+
+Адрес Grafana:
+
+```bash
+terraform output -raw grafana_ip
+```
+
+Адрес Kibana:
+
+```bash
+terraform output -raw kibana_ip
+```
+
+Проверить сайт:
+
+```bash
+curl "http://$(terraform output -raw site_ip)"
 ```
 
 Grafana:
 
 ```text
-http://62.84.127.9:3000
+http://<grafana_ip>:3000
 ```
 
 Kibana:
 
 ```text
-http://93.77.182.150:5601
+http://<kibana_ip>:5601
 ```
 
-Prometheus и Elasticsearch публичных IP не имеют.
-
-Так как используются прерываемые ВМ, публичные IP могут измениться после остановки или пересоздания ресурсов.
+Prometheus и Elasticsearch находятся в приватной сети и напрямую из интернета недоступны.
 
 ---
 
 # Итог
 
-В Yandex Cloud развернул инфраструктуру с двумя web-серверами Nginx в разных зонах доступности.
+В результате в Yandex Cloud развернул инфраструктуру с двумя Nginx web-серверами в разных зонах доступности.
 
-Оба web-сервера находятся в приватной сети.
+Внешний HTTP-трафик проходит через Application Load Balancer и распределяется между двумя backend-серверами.
 
-Внешний трафик принимается Application Load Balancer и распределяется между двумя backend.
+Для мониторинга используются Prometheus, Node Exporter, Nginx Log Exporter и Grafana.
 
-Оба сервера успешно проходят HTTP healthcheck.
+Для сбора логов используется цепочка:
 
-Для мониторинга используются Node Exporter, Nginx Log Exporter, Prometheus и Grafana.
+```text
+Nginx -> Filebeat -> Elasticsearch -> Kibana
+```
 
-Prometheus получает системные и HTTP-метрики от обоих web-серверов.
+Доступ к серверам по SSH выполняется пользователем `daniil`. Для сервисных машин подключение проходит через bastion.
 
-Для централизованного сбора логов Filebeat читает `access.log` и `error.log` Nginx и отправляет их в Elasticsearch.
+Доступ между компонентами ограничен Security Groups.
 
-Логи доступны для просмотра через Kibana.
+Для дисков всех виртуальных машин настроено ежедневное резервное копирование со сроком хранения семь дней.
 
-Доступ к внутренним серверам по SSH выполняется через bastion host с использованием `ProxyJump`.
+Инфраструктура создаётся Terraform, конфигурация серверов выполняется Ansible.
 
-Сетевой доступ между компонентами ограничен Security Groups.
+Отдельно проверил полное пересоздание инфраструктуры. После `terraform destroy` и нового `terraform apply` актуальный Ansible inventory формируется автоматически, а конфигурации сервисов получают новые внутренние IP без ручного редактирования файлов.
 
-Для дисков всех виртуальных машин настроено ежедневное создание snapshot с хранением в течение семи дней.
-
-Инфраструктура создаётся через Terraform, а настройка серверов и запуск сервисов выполняются через Ansible.
-
-Во время выполнения пришлось отдельно исправлять Nginx Log Exporter, Ansible playbook и настройку SSH через bastion.
-
-После финальной проверки все основные компоненты работают, а конфигурация может быть повторно развернута без ручного запуска сервисов.
-
----
-
-### Использованные источники
-
-1. [Yandex Cloud Terraform](https://yandex.cloud/ru/docs/tutorials/infrastructure-management/terraform-quickstart)
-2. [Yandex Cloud Application Load Balancer](https://yandex.cloud/ru/docs/application-load-balancer/)
-3. [Yandex Cloud Целевые группы](https://yandex.cloud/ru/docs/application-load-balancer/concepts/target-group)
-4. [Yandex Cloud Группы бэкендов](https://yandex.cloud/ru/docs/application-load-balancer/concepts/backend-group)
-5. [Yandex Cloud Группы безопасности](https://yandex.cloud/ru/docs/vpc/concepts/security-groups)
-6. [Terraform Registry Yandex Cloud Provider](https://registry.terraform.io/providers/yandex-cloud/yandex/latest/docs)
-7. [Ansible Documentation](https://docs.ansible.com/)
-8. [Docker Compose Documentation](https://docs.docker.com/compose/)
-9. [Prometheus Documentation](https://prometheus.io/docs/)
-10. [Prometheus Node Exporter](https://github.com/prometheus/node_exporter)
-11. [Prometheus Nginx Log Exporter](https://github.com/martin-helmich/prometheus-nginxlog-exporter)
-12. [Grafana Documentation](https://grafana.com/docs/grafana/latest/)
-13. [Grafana Dashboard — Node Exporter Full, ID 1860](https://grafana.com/grafana/dashboards/1860-node-exporter-full/)
-14. [Grafana Dashboard — NGINX Log Metrics, ID 15947](https://grafana.com/grafana/dashboards/15947-nginx-log-metrics-m/)
-15. [Elasticsearch Documentation](https://www.elastic.co/docs)
-16. [Filebeat Documentation](https://www.elastic.co/docs/reference/beats/filebeat)
-17. [Kibana Documentation](https://www.elastic.co/docs/explore-analyze)
-18. [Nginx Documentation](https://nginx.org/en/docs/)
-
----
+Это позволяет развернуть серверную часть проекта с нуля последовательным запуском Terraform и двух Ansible playbook.

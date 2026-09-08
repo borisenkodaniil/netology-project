@@ -1,23 +1,23 @@
 ---
-- name: install nginx
+- name: Установка и настройка Nginx
   hosts: webservers
   become: yes
 
   tasks:
 
-  - name: install nginx
+  - name: Установка Nginx
     apt:
       name: nginx
       state: present
       update_cache: yes
 
-  - name: start nginx
+  - name: Запуск Nginx
     service:
       name: nginx
       state: started
       enabled: yes
 
-  - name: copy index.html
+  - name: Создание главной страницы сайта
     copy:
       dest: /var/www/html/index.html
       content: |
